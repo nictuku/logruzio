@@ -1,8 +1,11 @@
 package logruzio
 
 import (
+	"fmt"
 	"io"
 	"net"
+	"sync"
+	"syscall"
 
 	"github.com/sirupsen/logrus"
 )
@@ -14,9 +17,10 @@ const (
 
 // HookOpts represents Logrus Logzio hook options
 type HookOpts struct {
-	Conn      io.Writer
-	Context   logrus.Fields
-	Formatter logrus.Formatter
+	sync.RWMutex // Lock for the Conn.
+	Conn         io.Writer
+	Context      logrus.Fields
+	Formatter    logrus.Formatter
 }
 
 // Hook represents a Logrus Logzio hook
@@ -69,9 +73,20 @@ func (h *Hook) Fire(entry *logrus.Entry) error {
 	if err != nil {
 		return err
 	}
-
-	if _, err = h.hookOpts.Conn.Write(dataBytes); err != nil {
-		return err
+	h.hookOpts.RLock()
+	_, err = h.hookOpts.Conn.Write(dataBytes)
+	h.hookOpts.RUnlock()
+	if err != nil {
+		if err != syscall.EPIPE {
+			return err
+		}
+		conn, err := net.Dial(proto, endpoint)
+		if err != nil {
+			return fmt.Errorf("Failed to re-establish connection: %v", err)
+		}
+		h.hookOpts.Lock()
+		defer h.hookOpts.Unlock()
+		h.hookOpts.Conn = conn
 	}
 
 	return nil
